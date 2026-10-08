@@ -10,7 +10,15 @@ enum Side {
 struct Order {
     id: u64,
     side: Side,
-    price: u64,    // price in integer ticks
+    price: u64,
+    quantity: u64,
+}
+
+#[derive(Debug)]
+struct Trade {
+    maker_order_id: u64,
+    taker_order_id: u64,
+    price: u64,
     quantity: u64,
 }
 
@@ -27,15 +35,106 @@ impl OrderBook {
         }
     }
 
-    fn add_order(&mut self, order: Order) {
-        let book = match order.side {
-            Side::Buy => &mut self.bids,
-            Side::Sell => &mut self.asks,
-        };
+    fn add_order(&mut self, mut incoming: Order) -> Vec<Trade> {
+        let mut trades = Vec::new();
 
-        book.entry(order.price)
-            .or_default()
-            .push_back(order);
+        match incoming.side {
+            Side::Buy => {
+                while incoming.quantity > 0 {
+                    let best_ask = match self.asks.keys().next().copied() {
+                        Some(price) => price,
+                        None => break,
+                    };
+
+                    // Buy only matches if bid >= ask.
+                    if incoming.price < best_ask {
+                        break;
+                    }
+
+                    let queue = self.asks.get_mut(&best_ask).unwrap();
+
+                    let maker = queue.front_mut().unwrap();
+
+                    let traded_quantity =
+                        incoming.quantity.min(maker.quantity);
+
+                    trades.push(Trade {
+                        maker_order_id: maker.id,
+                        taker_order_id: incoming.id,
+                        price: maker.price,
+                        quantity: traded_quantity,
+                    });
+
+                    maker.quantity -= traded_quantity;
+                    incoming.quantity -= traded_quantity;
+
+                    if maker.quantity == 0 {
+                        queue.pop_front();
+                    }
+
+                    if queue.is_empty() {
+                        self.asks.remove(&best_ask);
+                    }
+                }
+
+                // Remaining quantity becomes a resting bid.
+                if incoming.quantity > 0 {
+                    self.bids
+                        .entry(incoming.price)
+                        .or_default()
+                        .push_back(incoming);
+                }
+            }
+
+            Side::Sell => {
+                while incoming.quantity > 0 {
+                    let best_bid = match self.bids.keys().next_back().copied() {
+                        Some(price) => price,
+                        None => break,
+                    };
+
+                    // Sell only matches if ask <= bid.
+                    if incoming.price > best_bid {
+                        break;
+                    }
+
+                    let queue = self.bids.get_mut(&best_bid).unwrap();
+
+                    let maker = queue.front_mut().unwrap();
+
+                    let traded_quantity =
+                        incoming.quantity.min(maker.quantity);
+
+                    trades.push(Trade {
+                        maker_order_id: maker.id,
+                        taker_order_id: incoming.id,
+                        price: maker.price,
+                        quantity: traded_quantity,
+                    });
+
+                    maker.quantity -= traded_quantity;
+                    incoming.quantity -= traded_quantity;
+
+                    if maker.quantity == 0 {
+                        queue.pop_front();
+                    }
+
+                    if queue.is_empty() {
+                        self.bids.remove(&best_bid);
+                    }
+                }
+
+                // Remaining quantity becomes a resting ask.
+                if incoming.quantity > 0 {
+                    self.asks
+                        .entry(incoming.price)
+                        .or_default()
+                        .push_back(incoming);
+                }
+            }
+        }
+
+        trades
     }
 
     fn best_bid(&self) -> Option<u64> {
@@ -50,33 +149,31 @@ impl OrderBook {
 fn main() {
     let mut book = OrderBook::new();
 
+    // Existing sell order:
     book.add_order(Order {
         id: 1,
-        side: Side::Buy,
+        side: Side::Sell,
         price: 100,
         quantity: 5,
     });
 
-    book.add_order(Order {
+    // Incoming buy crosses the ask.
+    let trades = book.add_order(Order {
         id: 2,
         side: Side::Buy,
         price: 101,
         quantity: 3,
     });
 
-    book.add_order(Order {
-        id: 3,
-        side: Side::Sell,
-        price: 103,
-        quantity: 2,
-    });
-
-    book.add_order(Order {
-        id: 4,
-        side: Side::Sell,
-        price: 102,
-        quantity: 4,
-    });
+    for trade in trades {
+        println!(
+            "TRADE: maker={}, taker={}, price={}, quantity={}",
+            trade.maker_order_id,
+            trade.taker_order_id,
+            trade.price,
+            trade.quantity
+        );
+    }
 
     println!("Best bid: {:?}", book.best_bid());
     println!("Best ask: {:?}", book.best_ask());
