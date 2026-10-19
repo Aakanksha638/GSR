@@ -35,6 +35,12 @@ impl OrderBook {
         }
     }
 
+    fn cancel_order(&mut self, order_id: u64) -> bool {
+    // TODO: Find the order and remove it.
+    // Return true if cancelled, false if not found.
+    todo!()
+}
+
     fn add_order(&mut self, mut incoming: Order) -> Vec<Trade> {
         let mut trades = Vec::new();
 
