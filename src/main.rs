@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Side {
@@ -25,6 +25,7 @@ struct Trade {
 struct OrderBook {
     bids: BTreeMap<u64, VecDeque<Order>>,
     asks: BTreeMap<u64, VecDeque<Order>>,
+    order_prices: HashMap<u64, (Side, u64)>,
 }
 
 impl OrderBook {
@@ -32,13 +33,32 @@ impl OrderBook {
         Self {
             bids: BTreeMap::new(),
             asks: BTreeMap::new(),
+            order_prices: HashMap::new(),
         }
     }
 
     fn cancel_order(&mut self, order_id: u64) -> bool {
-    // TODO: Find the order and remove it.
-    // Return true if cancelled, false if not found.
-    todo!()
+        let (side, price) = match self.order_prices.remove(&order_id){
+            Some(location) => location,
+            None => return false,
+        };
+        let book = match side {
+            Side::Buy => &mut self.bids,
+            Side::Sell => &mut self.asks,
+        };
+
+        if let Some(queue) = book.get_mut(&price) {
+            if let Some(index) = queue.iter().position(|order| order.id == order_id) {
+                queue.remove(index);
+
+                if queue.is_empty() {
+                    book.remove(&price);
+                }
+                return true;
+            }
+
+        }
+    false 
 }
 
     fn add_order(&mut self, mut incoming: Order) -> Vec<Trade> {
@@ -85,10 +105,8 @@ impl OrderBook {
 
                 // Remaining quantity becomes a resting bid.
                 if incoming.quantity > 0 {
-                    self.bids
-                        .entry(incoming.price)
-                        .or_default()
-                        .push_back(incoming);
+                    self.order_prices.insert(incoming.id, (incoming.side, incoming.price));  //save the orders location
+                    self.bids.entry(incoming.price).or_default().push_back(incoming); //Add the order to the bid queue.
                 }
             }
 
@@ -150,6 +168,8 @@ impl OrderBook {
     fn best_ask(&self) -> Option<u64> {
         self.asks.keys().next().copied()
     }
+
+
 }
 
 fn main() {
@@ -183,4 +203,6 @@ fn main() {
 
     println!("Best bid: {:?}", book.best_bid());
     println!("Best ask: {:?}", book.best_ask());
+    println!("Cancelled: {}", book.cancel_order(1)); // Try cancelling order 1
+    println!("Cancelled again: {}", book.cancel_order(1)); // Try cancelling it twice
 }
