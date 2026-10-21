@@ -207,3 +207,44 @@ fn main() {
     println!("Cancelled: {}", book.cancel_order(1)); // Try cancelling order 1
     println!("Cancelled again: {}", book.cancel_order(1)); // Try cancelling it twice
 }
+
+#[cfg(test)] // Run this module only during testing
+mod tests {
+    use super::*; // Import the order book types and methods
+
+    #[test] // Tell Rust this is a test
+    fn finds_best_bid_and_ask() {
+        let mut book = OrderBook::new(); // Create an empty order book
+
+        book.add_order(Order { // Add the first buy order
+            id: 1,
+            side: Side::Buy,
+            price: 100,
+            quantity: 5,
+        });
+
+        book.add_order(Order { // Add a higher-priced buy order
+            id: 2,
+            side: Side::Buy,
+            price: 105,
+            quantity: 3,
+        });
+
+        book.add_order(Order { // Add the first sell order
+            id: 3,
+            side: Side::Sell,
+            price: 110,
+            quantity: 2,
+        });
+
+        book.add_order(Order { // Add a lower-priced sell order
+            id: 4,
+            side: Side::Sell,
+            price: 108,
+            quantity: 4,
+        });
+
+        assert_eq!(book.best_bid(), Some(105)); // Highest bid wins
+        assert_eq!(book.best_ask(), Some(108)); // Lowest ask wins
+    }
+}
