@@ -95,7 +95,8 @@ impl OrderBook {
                     incoming.quantity -= traded_quantity;
 
                     if maker.quantity == 0 {
-                        queue.pop_front();
+                        let filled_id = maker.id; // Remember its ID before removing it
+                        self.order_prices.remove(&filled_id); // Remove its index entry
                     }
 
                     if queue.is_empty() {
