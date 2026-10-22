@@ -61,106 +61,96 @@ impl OrderBook {
     false 
 }
 
-    fn add_order(&mut self, mut incoming: Order) -> Vec<Trade> {
-        let mut trades = Vec::new();
+    
+fn add_order(&mut self, mut incoming: Order) -> Vec<Trade> { // Process an incoming order.
+    let mut trades = Vec::new(); // Store every trade created by this order.
 
-        match incoming.side {
-            Side::Buy => {
-                while incoming.quantity > 0 {
-                    let best_ask = match self.asks.keys().next().copied() {
-                        Some(price) => price,
-                        None => break,
-                    };
+    match incoming.side { // Choose the matching logic based on the incoming side.
+        Side::Buy => { // A buyer matches against the lowest-priced sellers.
+            while incoming.quantity > 0 { // Continue while the buyer has quantity left.
+                let best_ask = match self.asks.keys().next().copied() { // Find the cheapest ask.
+                    Some(price) => price, // Use the best available ask price.
+                    None => break, // Stop when there are no sellers.
+                }; // Finish finding the best ask.
 
-                    // Buy only matches if bid >= ask.
-                    if incoming.price < best_ask {
-                        break;
-                    }
+                if incoming.price < best_ask { // Check whether the buyer can afford the ask.
+                    break; // Stop if the prices do not cross.
+                } // Finish the price check.
 
-                    let queue = self.asks.get_mut(&best_ask).unwrap();
+                let (traded_quantity, filled_id, level_empty) = { // Limit the mutable borrow to this block.
+                    let queue = self.asks.get_mut(&best_ask).unwrap(); // Get sellers at this price.
+                    let maker = queue.front_mut().unwrap(); // FIFO means the oldest seller goes first.
+                    let traded_quantity = incoming.quantity.min(maker.quantity); // Trade the smaller quantity.
+                    maker.quantity -= traded_quantity; // Reduce the resting seller's quantity.
+                    incoming.quantity -= traded_quantity; // Reduce the buyer's remaining quantity.
+                    let filled_id = if maker.quantity == 0 { Some(maker.id) } else { None }; // Remember a fully filled seller.
+                    if filled_id.is_some() { queue.pop_front(); } // Remove the seller if completely filled.
+                    (traded_quantity, filled_id, queue.is_empty()) // Return cleanup information.
+                }; // Release the mutable borrow before updating other fields.
 
-                    let maker = queue.front_mut().unwrap();
+                trades.push(Trade { // Record the completed trade.
+                    maker_order_id: filled_id.unwrap_or_else(|| { // Use the resting seller ID when it remains.
+                        self.asks.get(&best_ask).unwrap().front().unwrap().id // Read the remaining seller ID.
+                    }), // Finish selecting the maker ID.
+                    taker_order_id: incoming.id, // Record the incoming buyer ID.
+                    price: best_ask, // Trades execute at the resting seller's price.
+                    quantity: traded_quantity, // Record the traded quantity.
+                }); // Finish recording the trade.
 
-                    let traded_quantity =
-                        incoming.quantity.min(maker.quantity);
+                if let Some(id) = filled_id { self.order_prices.remove(&id); } // Remove a filled seller from the index.
+                if level_empty { self.asks.remove(&best_ask); } // Remove an empty price level.
+            } // Finish matching the incoming buyer.
 
-                    trades.push(Trade {
-                        maker_order_id: maker.id,
-                        taker_order_id: incoming.id,
-                        price: maker.price,
-                        quantity: traded_quantity,
-                    });
+            if incoming.quantity > 0 { // Keep any unfilled buyer quantity in the book.
+                self.order_prices.insert(incoming.id, (Side::Buy, incoming.price)); // Index the resting buy order.
+                self.bids.entry(incoming.price).or_default().push_back(incoming); // Store it on the bid side.
+            } // Finish storing the remaining buyer quantity.
+        } // Finish buy-side handling.
 
-                    maker.quantity -= traded_quantity;
-                    incoming.quantity -= traded_quantity;
+        Side::Sell => { // A seller matches against the highest-priced buyers.
+            while incoming.quantity > 0 { // Continue while the seller has quantity left.
+                let best_bid = match self.bids.keys().next_back().copied() { // Find the highest bid.
+                    Some(price) => price, // Use the best available bid price.
+                    None => break, // Stop when there are no buyers.
+                }; // Finish finding the best bid.
 
-                    if maker.quantity == 0 {
-                        let filled_id = maker.id; // Remember its ID before removing it
-                        self.order_prices.remove(&filled_id); // Remove its index entry
-                    }
+                if incoming.price > best_bid { // Check whether the bid meets the seller's price.
+                    break; // Stop if the prices do not cross.
+                } // Finish the price check.
 
-                    if queue.is_empty() {
-                        self.asks.remove(&best_ask);
-                    }
-                }
+                let (maker_id, traded_quantity, filled_id, level_empty) = { // Limit the mutable borrow to this block.
+                    let queue = self.bids.get_mut(&best_bid).unwrap(); // Get buyers at this price.
+                    let maker = queue.front_mut().unwrap(); // FIFO means the oldest buyer goes first.
+                    let maker_id = maker.id; // Save the buyer ID before possibly removing it.
+                    let traded_quantity = incoming.quantity.min(maker.quantity); // Trade the smaller quantity.
+                    maker.quantity -= traded_quantity; // Reduce the resting buyer's quantity.
+                    incoming.quantity -= traded_quantity; // Reduce the seller's remaining quantity.
+                    let filled_id = if maker.quantity == 0 { Some(maker.id) } else { None }; // Remember a fully filled buyer.
+                    if filled_id.is_some() { queue.pop_front(); } // Remove the buyer if completely filled.
+                    (maker_id, traded_quantity, filled_id, queue.is_empty()) // Return trade and cleanup information.
+                }; // Release the mutable borrow before updating other fields.
 
-                // Remaining quantity becomes a resting bid.
-                if incoming.quantity > 0 {
-                    self.order_prices.insert(incoming.id, (incoming.side, incoming.price));  //save the orders location
-                    self.bids.entry(incoming.price).or_default().push_back(incoming); //Add the order to the bid queue.
-                }
-            }
+                trades.push(Trade { // Record the completed trade.
+                    maker_order_id: maker_id, // Record the resting buyer ID.
+                    taker_order_id: incoming.id, // Record the incoming seller ID.
+                    price: best_bid, // Trades execute at the resting buyer's price.
+                    quantity: traded_quantity, // Record the traded quantity.
+                }); // Finish recording the trade.
 
-            Side::Sell => {
-                while incoming.quantity > 0 {
-                    let best_bid = match self.bids.keys().next_back().copied() {
-                        Some(price) => price,
-                        None => break,
-                    };
+                if let Some(id) = filled_id { self.order_prices.remove(&id); } // Remove a filled buyer from the index.
+                if level_empty { self.bids.remove(&best_bid); } // Remove an empty price level.
+            } // Finish matching the incoming seller.
 
-                    // Sell only matches if ask <= bid.
-                    if incoming.price > best_bid {
-                        break;
-                    }
+            if incoming.quantity > 0 { // Keep any unfilled seller quantity in the book.
+                self.order_prices.insert(incoming.id, (Side::Sell, incoming.price)); // Index the resting sell order.
+                self.asks.entry(incoming.price).or_default().push_back(incoming); // Store it on the ask side.
+            } // Finish storing the remaining seller quantity.
+        } // Finish sell-side handling.
+    } // Finish choosing the incoming order's side.
 
-                    let queue = self.bids.get_mut(&best_bid).unwrap();
+    trades // Return all trades created by this order.
+} // Finish adding an order.
 
-                    let maker = queue.front_mut().unwrap();
-
-                    let traded_quantity =
-                        incoming.quantity.min(maker.quantity);
-
-                    trades.push(Trade {
-                        maker_order_id: maker.id,
-                        taker_order_id: incoming.id,
-                        price: maker.price,
-                        quantity: traded_quantity,
-                    });
-
-                    maker.quantity -= traded_quantity;
-                    incoming.quantity -= traded_quantity;
-
-                    if maker.quantity == 0 {
-                        queue.pop_front();
-                    }
-
-                    if queue.is_empty() {
-                        self.bids.remove(&best_bid);
-                    }
-                }
-
-                // Remaining quantity becomes a resting ask.
-                if incoming.quantity > 0 {
-                    self.asks
-                        .entry(incoming.price)
-                        .or_default()
-                        .push_back(incoming);
-                }
-            }
-        }
-
-        trades
-    }
 
     fn best_bid(&self) -> Option<u64> {
         self.bids.keys().next_back().copied()
@@ -247,4 +237,30 @@ mod tests {
         assert_eq!(book.best_bid(), Some(105)); // Highest bid wins
         assert_eq!(book.best_ask(), Some(108)); // Lowest ask wins
     }
+
+    #[test] // Tell Rust to run this test
+fn fully_filled_order_is_removed_from_index() {
+    let mut book = OrderBook::new(); // Create an empty book
+
+    book.add_order(Order { // Add a resting sell order
+        id: 10,
+        side: Side::Sell,
+        price: 100,
+        quantity: 2,
+    });
+
+    assert!(book.order_prices.contains_key(&10)); // Confirm it is indexed
+
+    let trades = book.add_order(Order { // Buy the entire resting quantity
+        id: 20,
+        side: Side::Buy,
+        price: 100,
+        quantity: 2,
+    });
+
+    assert_eq!(trades.len(), 1); // Exactly one trade should execute
+    assert_eq!(trades[0].quantity, 2); // Both units should be filled
+    assert!(!book.order_prices.contains_key(&10)); // Filled order leaves the index
+    assert_eq!(book.best_ask(), None); // No sell order should remain
+}
 }
